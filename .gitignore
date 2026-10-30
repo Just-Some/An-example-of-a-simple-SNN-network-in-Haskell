@@ -1,2 +1,3 @@
-./app/V1.hs
-./app/V2.hs
+app/V1.hs
+app/V2.hs
+dist-newstyle

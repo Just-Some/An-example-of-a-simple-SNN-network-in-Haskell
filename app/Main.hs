@@ -14,12 +14,12 @@ newtype Threshold = Threshold Double
 newtype Amplitude = Amplitude Double
 
 data Neuron = Neuron {
-    nType :: NeuronType, -- Тип нейрона
-    nWeights :: [Weight], -- Веса нейрона
-    nVMemb :: VMemb, -- Мембраный потенциал
-    postTrace :: Trace, -- Post След
+    nType :: NeuronType,
+    nWeights :: [Weight],
+    nVMemb :: VMemb,
+    postTrace :: Trace,
     nCount :: Int,
-    nRefr :: Int -- [НОВОЕ] сколько шагов нейрон ещё не может стрелять
+    nRefr :: Int
 }
 
 mkNeuron :: NeuronType -> Double -> [Weight] -> Neuron
@@ -29,31 +29,29 @@ mkNeuron ntype vmemb w = Neuron {
     nVMemb = VMemb vmemb,
     postTrace = Trace 0,
     nCount = 0,
-    nRefr = 0 -- [НОВОЕ]
+    nRefr = 0
 }
 
 data SpikeRes = SpikeRes {
-    preTrace :: Trace, -- Pre След
-    sSpikeVal :: SpikeVal, -- Сигнал спайка
-    preType :: NeuronType -- Старый тип
+    preTrace :: Trace,
+    sSpikeVal :: SpikeVal,
+    preType :: NeuronType
 }
 
 data LayerCfg = LayerCfg {
-    cfgBeta :: Beta,       -- Коэффициент забывания потенциала
-    cfgVThresh :: Threshold,  -- Порог срабатывания
+    cfgBeta :: Beta,
+    cfgVThresh :: Threshold,
 
-    -- Параметры STDP для возбуждающих связей (E -> E)
-    cfgEAPlus    :: Amplitude, -- Амплитуда LTP (потенциации)
-    cfgEAMinus   :: Amplitude, -- Амплитуда LTD (депрессии)
-    
-    -- Параметры STDP для тормозных связей (I -> E)
+    cfgEAPlus :: Amplitude,
+    cfgEAMinus :: Amplitude,
+
     cfgIAPlus   :: Amplitude, 
     cfgIAMinus  :: Amplitude,
 
-    cfgBetaTrace :: Beta,       -- Коэффициент забывания трейса
-    cfgWMax :: Weight,     -- Максимальный вес синапса
-    cfgWMin :: Weight,     -- Минимальный вес синапса
-    cfgRefract :: Int      -- [НОВОЕ] шагов молчания после спайка
+    cfgBetaTrace :: Beta,
+    cfgWMax :: Weight,
+    cfgWMin :: Weight,
+    cfgRefract :: Int
 }
 
 data Layer = Layer {
@@ -72,8 +70,6 @@ weightSum weights spikeRes = WeightSum $ sum [ sign * w * s
     , let sign = if pType == E then 1.0 else -1.0 
     ]
 
--- [ИЗМЕНЕНО] lif заменён: теперь только заряд, решение о спайке принимает WTA в stepLayer.
--- В рефрактерности заряд не копится.
 membraneCharge :: LayerCfg -> WeightSum -> Neuron -> Double
 membraneCharge cfg (WeightSum ws) neuron
     | nRefr neuron > 0 = 0
@@ -104,7 +100,6 @@ stdp cfg preNeuronType (SpikeVal preValSpike) (SpikeVal postValSpike) (Weight we
         clamped = max wMin (min wMax (weight + dLTP - dLTD))
         newWeight = Weight clamped
 
--- [ИЗМЕНЕНО] добавлен параметр fires (вердикт WTA)
 stepNeuron :: LayerCfg -> [SpikeRes] -> Bool -> Neuron -> (Neuron, SpikeRes)
 stepNeuron cfg inSpikeRes fires neuron = (newNeuron, outSpikeRes)
     where
@@ -149,35 +144,28 @@ stepNeuron cfg inSpikeRes fires neuron = (newNeuron, outSpikeRes)
             preType   = nType neuron
         }
 
-
--- [ИЗМЕНЕНО] жёсткий WTA: в каждом пуле (E и I отдельно) стреляет максимум один нейрон
 stepLayer :: Layer -> [SpikeRes] -> (Layer, [SpikeRes])
 stepLayer (Layer cfg neurons) spikeRes = (newLayer, outSpikes)
   where
     Threshold th = cfgVThresh cfg
 
-    -- Фаза 1: заряд каждого нейрона БЕЗ решения о спайке
     charges = [ membraneCharge cfg (weightSum (nWeights n) spikeRes) n | n <- neurons ]
 
-    -- Кандидаты: не в рефрактерности и заряд >= порога. (запас над порогом, индекс, тип)
     cands = [ (c - th, i, nType n)
             | (i, c, n) <- zip3 [0 :: Int ..] charges neurons
             , nRefr n == 0
             , c >= th ]
 
-    -- Фаза 2: побеждает максимальный запас; при равенстве меньший индекс
     winnerOf ty = case [ (m, i) | (m, i, ty') <- cands, ty' == ty ] of
         [] -> []
         xs -> [ snd (maximumBy (comparing (\(m, i) -> (m, negate i))) xs) ]
     winners = winnerOf E ++ winnerOf I
     losers  = [ i | (_, i, _) <- cands, i `notElem` winners ]
 
-    -- Фаза 3: каждый нейрон получает вердикт
     res = [ stepNeuron cfg spikeRes (i `elem` winners) n
           | (i, n) <- zip [0 :: Int ..] neurons ]
     (stepped, outSpikes) = unzip res
 
-    -- Проигравшие кандидаты: потенциал в ноль (латеральное торможение)
     newNeurons = [ if i `elem` losers then n { nVMemb = VMemb 0 } else n
                  | (i, n) <- zip [0 :: Int ..] stepped ]
 
@@ -274,8 +262,6 @@ runDebug vals network = go vals network 0 []
                 }
             in go rest newNet (c+1) (newHist : hist) 
 
--- [ИЗМЕНЕНО] сколько раз нейрон (layer, neuron) стрелял при input1 vs input2.
--- Теперь видит и спайк на t=0 (раньше терялся).
 spikesByInput :: [History] -> Int -> Int -> (Int, Int)
 spikesByInput hist layerIdx neuronIdx = go 0 hist (0, 0)
   where
@@ -296,26 +282,24 @@ main :: IO ()
 main = do
     let cfg = LayerCfg {
         cfgBeta      = Beta 0.6,
-        cfgVThresh   = Threshold 0.20,    -- [ИЗМЕНЕНО] выше заряда «чужого» веса в равновесии (≈0.16), ниже «своего» (≈0.30)
+        cfgVThresh   = Threshold 0.20,
         cfgEAPlus    = Amplitude 0.010,
-        cfgEAMinus   = Amplitude 0.020,   -- [ИЗМЕНЕНО] LTD вдвое сильнее LTP: чужой вес равновесно ≈0.40
+        cfgEAMinus   = Amplitude 0.020,
         cfgIAPlus    = Amplitude 0.005,
         cfgIAMinus   = Amplitude 0.005,
         cfgBetaTrace = Beta 0.5,
         cfgWMax      = Weight 0.8,
         cfgWMin      = Weight 0.0,
-        cfgRefract   = 2                  -- [НОВОЕ] молчит 2 шага после спайка
+        cfgRefract   = 2
     }
 
     let nIn = 2
-    let nSteps = 1000                     -- [ИЗМЕНЕНО]
+    let nSteps = 1000
 
     let cfgL1 = cfg
     let cfgL2 = cfg
-    let cfgL3 = cfg { cfgVThresh = Threshold 0.08 }   -- [ИЗМЕНЕНО] оценка вручную, см. пояснение
+    let cfgL3 = cfg { cfgVThresh = Threshold 0.08 }
 
-    -- [ИЗМЕНЕНО] эталон: асимметричные старты.
-    -- Симметричный тест [0.4,0.4] см. пояснение (нужен гомеостаз).
     let l1 = mkLayer cfgL1 [ mkNeuron E 0 [Weight 0.6, Weight 0.2]
                            , mkNeuron E 0 [Weight 0.2, Weight 0.6] ]
 
@@ -335,7 +319,6 @@ main = do
 
     mapM_ printHistory [hist !! t | t <- [0, 100, 500, 1000-1], t < length hist]
 
-    putStrLn "=== Селективность ==="
     let report name l n = do
             let (a, b) = spikesByInput hist l n
             putStrLn $ name ++ ": input1=" ++ show a ++ " input2=" ++ show b
